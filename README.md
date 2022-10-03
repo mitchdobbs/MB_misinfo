@@ -1,6 +1,11 @@
+# Memory failure predicts belief regression after the correction of misinformation #
+
 This repository contains code and data for the manuscript "Memory failure predicts belief regression after the correction of misinformation", forthcoming in the journal Cognition (available at https://authors.elsevier.com/c/1fphK2Hx2pj3L). 
 
-The data file, `data.csv`, contains the following columns: 
+Code for analyses can be found in the `Analyses_1.3.Rmd` file.
+Code for figures can be found in the `Plots_1.2.Rmd` file.
+
+The data file, `Data.csv`, contains the following columns: 
 
 * `Condition`: participants’ experimental condition (1 = Control, 2 = Belief first correction, 3 = Memory first correction)
 * `Education`: measured on a 1-6 scale, where 1 = did not finish high school and 6 = Advanced/postgraduate degree
