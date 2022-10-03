@@ -22,8 +22,7 @@ library(ggExtra)
 library(gghalves)
 library(gridExtra)
 
-#data <- read.csv("/Users/mitchdobbs/Desktop/R/MemBelief/Run CSV/Data.csv")
-df <- read_csv("https://raw.githubusercontent.com/mitchdobbs/MB_misinfo/main/Data.csv")
+data <- read_csv("https://raw.githubusercontent.com/mitchdobbs/MB_misinfo/main/Data.csv")
 
 mismatch <- "_(1[0-6]|[1-9])$" #matches #s 1-16
 factmatch <- "_(1[7-9]|2[0-9]|3[0-2])$" #matches #s 17-32
