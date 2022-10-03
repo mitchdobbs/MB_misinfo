@@ -18,8 +18,7 @@ library(rstatix) #for mixed model ANOVAs
 library(broom)
 library(magrittr)
 
-#data <- read.csv("/Users/mitchdobbs/Desktop/R/MemBelief/Run CSV/Data.csv")
-df <- read_csv("https://raw.githubusercontent.com/mitchdobbs/MB_misinfo/main/Data.csv")
+data <- read_csv("https://raw.githubusercontent.com/mitchdobbs/MB_misinfo/main/Data.csv")
 
 ```
 
