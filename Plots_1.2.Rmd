@@ -1,0 +1,754 @@
+---
+title: "Memory/Belief - Make Figures"
+author: "Mitch Dobbs"
+date: "2/22/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#LOAD DATA. GET DATAFRAMES
+```{r, message=FALSE, warning=FALSE}
+
+rm(list = ls())
+
+library(tidyverse)
+library(broom)
+library(magrittr)
+library(cowplot)
+library(ggExtra)
+library(gghalves)
+library(gridExtra)
+
+data <- read.csv("/Users/mitchdobbs/Desktop/R/MemBelief/Run CSV/Data.csv")
+
+mismatch <- "_(1[0-6]|[1-9])$" #matches #s 1-16
+factmatch <- "_(1[7-9]|2[0-9]|3[0-2])$" #matches #s 17-32
+
+indv <- data %>% 
+  mutate(Party = case_when(Party.General == "Democrat" | Party.Closer == "Closer to the Democratic Party" ~ 1,
+                           Party.General == "Republican" | Party.Closer == "Closer to the Republican Party" ~ 2,
+                           Party.General == "Other Party" | Party.Closer == "Neither" ~ 3)) %>%
+  select(Condition, Gender, Age, Education, Party, BPre_1:MMonth_32) %>% 
+  mutate(id = row_number()) %>% 
+  group_by(id) %>% 
+  nest(B_PreM = contains("BPre") & matches(mismatch),
+       B_ImmM = contains("BImm") & matches(mismatch),
+       B_MonthM = contains("BMonth") & matches(mismatch),
+       M_ImmM = contains("MImm") & matches(mismatch),
+       M_MonthM = contains("MMonth") & matches(mismatch),
+       B_PreF = contains("BPre") & matches(factmatch),
+       B_ImmF = contains("BImm") & matches(factmatch),
+       B_MonthF = contains("BMonth") & matches(factmatch),
+       M_ImmF = contains("MImm") & matches(factmatch),
+       M_MonthF = contains("MMonth") & matches(factmatch)) %>% 
+  pivot_longer(cols = B_PreM:M_MonthF) %>% 
+  mutate(value = map(value, rowMeans)) %>% 
+  pivot_wider(names_from = name, values_from = value) %>% 
+  unnest(B_PreM:M_MonthF) %>% 
+  ungroup() %>% 
+  mutate(RegressionIndexMisinfo = (B_MonthM - B_ImmM)/(B_PreM - B_ImmM),
+         RegressionIndexFacts = (B_MonthF - B_ImmF)/(B_PreF - B_ImmF)) %>%  
+  select(Condition, Gender, Age, Education, Party, B_PreM:RegressionIndexFacts) %>%
+  mutate(across(starts_with("Regression"), ~ifelse(abs(.) == Inf, NA,.)))
+
+#Dataframe for means/regression index by item
+
+items <- data %>% 
+  select(Condition, BPre_1:MMonth_32) %>% 
+  filter(Condition == 2 | Condition == 3) %>% 
+  select(-Condition) %>%
+  pivot_longer(cols = "BPre_1":"MMonth_32",
+               names_to = "Item",
+               values_to = "Mean") %>% 
+  mutate(ItemNumber = rep(1:32, times = 2050),
+         Time = as.factor(case_when(grepl("Pre", Item) ~ "BPre",
+                                    grepl("BImm", Item) ~ "BImm",
+                                    grepl("BMonth", Item) ~ "BMonth",
+                                    grepl("MImm", Item) ~ "MImm",
+                                    grepl("MMonth", Item) ~ "MMonth")),
+         Time = factor(Time, levels = c("BPre", "BImm", "BMonth", "MImm", "MMonth"))) %>% 
+  group_by(ItemNumber, Time) %>% 
+  summarise(Mean = mean(Mean), .groups = "drop") %>% 
+  pivot_wider(names_from = "Time", values_from = "Mean") %>% 
+  mutate(RegressionIndex = (BMonth - BImm)/(BPre - BImm)) %>%  
+  round(digits = 3) %>% 
+  mutate(MythFact = ifelse(ItemNumber >= 17, "F", "M")) %>% 
+  select(ItemNumber, MythFact, BPre:RegressionIndex)
+
+#Dataframe for Winsorized items
+
+#Ranks items, pulls vector of item ranked item numbers 
+winsor_list <- data %>% 
+  select(Condition, BPre_1:BPre_32) %>% 
+  filter(Condition == 2 | Condition == 3) %>% 
+  select(-Condition) %>% 
+  pivot_longer(cols = "BPre_1":"BPre_32", names_to = "Item", values_to = "Mean") %>% 
+  mutate(ItemNumber = rep(1:32, times = 410),
+         Myth_Fact = ifelse(ItemNumber < 17, "Myth", "Fact")) %>% 
+  group_by(ItemNumber, Myth_Fact) %>% 
+  summarise(Rating = mean(Mean)) %>% 
+  pivot_wider(names_from = "Myth_Fact", values_from = "Rating") %>%
+  as.data.frame(.) %>%
+  arrange(., Myth, Fact) %>% 
+  slice(1:8, 17:24) %>% 
+  pull(ItemNumber) %>% 
+  as.character(.)
+
+#Creates a df of these items (i.e., highest and lowest eight)
+winsormyth = "_([0-9]|1[1-4])$" #Matches winsorized misinfo
+winsorfact = "_(1[8-9]|2[0-9]|3[1-2])$" #matches winsorized facts
+
+Winsor <- data %>% 
+  mutate(id = row_number()) %>% 
+  select(id, Condition, BPre_1:MMonth_32) %>% 
+  pivot_longer(-c(id, Condition)) %>% 
+  mutate(item = str_extract_all(name, "\\d+")) %>% 
+  filter(item %in% winsor_list) %>% 
+  select(-item) %>% 
+  group_by(id) %>% 
+  pivot_wider(names_from = name, values_from = value) %>% 
+  nest(B_PreM = contains("BPre") & matches(winsormyth),
+       B_ImmM = contains("BImm") & matches(winsormyth),
+       B_MonthM = contains("BMonth") & matches(winsormyth),
+       M_ImmM = contains("MImm") & matches(winsormyth),
+       M_MonthM = contains("MMonth") & matches(winsormyth),
+       B_PreF = contains("BPre") & matches(winsorfact),
+       B_ImmF = contains("BImm") & matches(winsorfact),
+       B_MonthF = contains("BMonth") & matches(winsorfact),
+       M_ImmF = contains("MImm") & matches(winsorfact),
+       M_MonthF = contains("MMonth") & matches(winsorfact)) %>% 
+  pivot_longer(-c(id, Condition)) %>% 
+  mutate(value = map(value, rowMeans)) %>% 
+  pivot_wider(names_from = name, values_from = value) %>% 
+  unnest(everything()) %>% 
+  ungroup() %>% 
+  select(-id) %>% 
+  select(Condition, B_PreM, B_ImmM, B_MonthM,B_PreF, B_ImmF, B_MonthF,M_ImmM, M_MonthM, M_ImmF, M_MonthF)
+
+```
+
+#Set up a theme 
+```{r}
+
+apa <- theme(legend.position = "none",
+        strip.background=element_blank(),
+        axis.ticks.y=element_line(size=.3,color="black"),
+        axis.text.x=element_text(size=14,color="black"),
+        axis.text.y=element_text(size=14,color="black"),
+        axis.title = element_text(size = 16),
+        plot.title = element_text(size = 16, color = "black", hjust = .5, face = "bold"), 
+        panel.background = element_blank(),
+        panel.spacing.x = unit(-.01, "in"),
+        panel.border = element_rect(size = .5, fill = NA, color = "black"))
+
+
+```
+
+#Figure 1
+```{r}
+
+F1 <- indv %>% 
+  filter(Condition == 2 | Condition == 3) %>% 
+  select(B_ImmM, B_MonthM, M_ImmM, M_MonthM) %>% 
+  pivot_longer(cols = "B_ImmM":"M_MonthM", names_to = "Items", values_to = "Rating") %>% 
+  mutate(Time = ifelse(grepl("Imm", Items), "Immediate Post Test", "One-Month Delayed Post Test"),
+         Items = ifelse(grepl("B_", Items), "Belief", "Memory"),
+         ID = rep(1:410, each = 4)) %>% 
+  pivot_wider(names_from = "Items", values_from = "Rating")
+
+Imm <- ggplot(data = F1 %>%filter(Time == "Immediate Post Test"), aes(Belief, Memory))+
+  geom_point(color = "blue")+
+  labs(x = "Belief", y = "Memory")+
+  ggtitle("Immediate Post Test")+
+  scale_y_continuous(breaks = seq(0,10,1))+
+  scale_x_continuous(breaks = seq(0,10,1))+
+  geom_smooth(method = "lm", color = "red", se = FALSE)+
+  apa+
+  theme(strip.text = element_text(size = 18, face = "bold"),
+        aspect.ratio = 1)
+
+Month <- ggplot(data = F1 %>%filter(Time == "One-Month Delayed Post Test"), aes(Belief, Memory))+
+  geom_point(color = "blue")+
+  labs(x = "Belief", y = "Memory")+
+  ggtitle("Delayed Post Test")+
+  scale_y_continuous(breaks = seq(0,10,1), limits = c(0,10,1))+
+  scale_x_continuous(breaks = seq(0,10,1))+
+  geom_smooth(method = "lm", color = "red", se = FALSE)+
+  apa+
+  theme(strip.text = element_text(size = 18, face = "bold"),
+        aspect.ratio = 1)
+
+Fig1 <- grid.arrange(Imm, Month, nrow = 1, respect = TRUE)
+
+
+```
+
+#Figure 2
+```{r}
+
+BeliefData <- indv %>% 
+  select(Condition, B_PreM, B_ImmM, B_MonthM, B_PreF, B_ImmF, B_MonthF) %>% 
+  mutate(BIPM = B_ImmM - B_PreM,
+         BMIM = B_MonthM - B_ImmM,
+         BIPF = B_ImmF - B_PreF,
+         BMIF = B_MonthF - B_ImmF,
+         ID = row_number()) %>% 
+  pivot_longer(cols = "B_PreM":"B_MonthF", names_to = "Group", values_to = "Value") %>%
+  select(Condition, Group, Value, BIPM,BIPF,BMIM, BMIF, ID) %>% 
+  mutate(Time = as.numeric(case_when(grepl("Pre", Group) ~ "1",
+                                     grepl("Imm", Group) ~ "2",
+                                     grepl("Month", Group) ~ "3")),
+         Dummy = rep(1:6, times = 612),
+         MoF = ifelse(Dummy < 4, "Myth", "Fact")) %>%
+  mutate(Slope1M  = ifelse(BIPM > 0,  "Up",
+                           ifelse(BIPM < 0, "Down", "Neutral"))) %>% 
+  mutate(Slope1F  = ifelse(BIPF > 0,  "Up",
+                           ifelse(BIPF < 0, "Down", "Neutral"))) %>%
+  mutate(Slope2M  = ifelse(BMIM > 0,  "Up",
+                           ifelse(BMIM < 0, "Down", "Neutral"))) %>% 
+  mutate(Slope2F  = ifelse(BMIF > 0,  "Up",
+                           ifelse(BMIF < 0, "Down", "Neutral")))
+
+NCM <- ggplot(data = BeliefData %>% filter(Condition != 1), aes(y = Value))+
+  geom_point(data = BeliefData %>% filter(Time =="1", MoF == "Myth", Condition != 1), 
+             aes(x = Time), color = 'dodgerblue2', size = 1.5, 
+             alpha = .2)+
+  geom_point(data = BeliefData %>% filter(Time =="2", MoF == "Myth", Condition != 1), 
+             aes(x = Time), color = 'dodgerblue2', size = 1.5, 
+             alpha = .2)+
+  geom_point(data = BeliefData %>% filter(Time =="3", MoF == "Myth", Condition != 1), 
+             aes(x = Time), color = 'dodgerblue2', size = 1.5, 
+             alpha = .2)+
+  scale_y_continuous(limits = c(0,10),breaks = seq(0, 10, 1))+
+  scale_x_continuous(breaks = c(1, 2, 3), labels = c("Pre", "Immediate", "Delayed"))+
+  geom_line(data = BeliefData %>% filter(Slope1M =="Down", MoF == "Myth", Time != 3, Condition != 1), 
+            aes(x = Time, group = ID), color = 'springgreen3', 
+            alpha = .25,  size = 0.25)+
+  geom_line(data = BeliefData %>% filter(Slope1M =="Up", MoF == "Myth", Time != 3, Condition != 1), 
+            aes(x = Time, group = ID), color = 'darkblue', 
+            alpha = .65,  size = 0.35)+
+  geom_line(data = BeliefData %>% filter(Slope1M =="Neutral", MoF == "Myth", Time != 3, Condition != 1), 
+            aes(x = Time, group = ID), color = 'deeppink2', 
+            alpha = .5,  size = 0.5)+
+  geom_line(data = BeliefData %>% filter(Slope2M =="Down", MoF == "Myth", Time != 1, Condition != 1), 
+            aes(x = Time, group = ID), color = 'springgreen3', 
+            alpha = .65,  size = 0.35)+
+  geom_line(data = BeliefData %>% filter(Slope2M =="Up", MoF == "Myth", Time != 1, Condition != 1), 
+            aes(x = Time, group = ID), color = 'darkblue', 
+            alpha = .25,  size = 0.25)+
+  geom_line(data = BeliefData %>% filter(Slope2M =="Neutral", MoF == "Myth", Time != 1, Condition != 1), 
+            aes(x = Time, group = ID), color = 'deeppink2', 
+            alpha = .5,  size = 0.5)+
+  geom_half_boxplot(data = BeliefData %>% filter(Time == "1", MoF == "Myth", Condition != 1), aes(x=Time, y = Value), 
+                    position = position_nudge(x = -.25), alpha = .5,
+                    side = "l",outlier.shape = NA, center = TRUE, 
+                    errorbar.draw = FALSE, width = .2, fill = 'dodgerblue2')+
+  geom_half_boxplot(data = BeliefData %>% filter(Time == "3", MoF == "Myth", Condition != 1), aes(x=Time, y = Value), 
+                    position = position_nudge(x = .25), alpha = .5, side = "r", outlier.shape = NA, center = TRUE, 
+                    errorbar.draw = FALSE, width = .2, fill = 'dodgerblue2')+
+  geom_boxplot(data = BeliefData %>% filter(Time == "2", MoF == "Myth", Condition != 1), aes(x=Time, y = Value),
+               alpha = .5, outlier.shape = NA, width = .1, fill = 'dodgerblue2')+
+  labs(x = "Retention Interval", y = "Belief Rating")+
+  ggtitle("Correction Condition")+
+  apa
+
+#Not Control, Facts
+
+NCF <- ggplot(data = BeliefData %>% filter(Condition != 1), aes(y = Value))+
+  geom_point(data = BeliefData %>% filter(Time =="1", MoF == "Fact", Condition != 1), 
+             aes(x = Time), color = 'dodgerblue2', size = 1.5, 
+             alpha = .2)+
+  geom_point(data = BeliefData %>% filter(Time =="2", MoF == "Fact", Condition != 1), 
+             aes(x = Time), color = 'dodgerblue2', size = 1.5, 
+             alpha = .2)+
+  geom_point(data = BeliefData %>% filter(Time =="3", MoF == "Fact", Condition != 1), 
+             aes(x = Time), color = 'dodgerblue2', size = 1.5, 
+             alpha = .2)+
+  scale_y_continuous(limits = c(0,10), breaks = seq(0, 10, 1))+
+  scale_x_continuous(breaks = c(1, 2, 3), labels = c("Pre", "Immediate", "Post"))+
+  geom_line(data = BeliefData %>% filter(Slope1F =="Down", MoF == "Fact", Time != 3, Condition != 1), 
+            aes(x = Time, group = ID), color = 'springgreen3', 
+            alpha = .5,  size = 0.35)+
+  geom_line(data = BeliefData %>% filter(Slope1F =="Up", MoF == "Fact", Time != 3, Condition != 1), 
+            aes(x = Time, group = ID), color = 'darkblue', 
+            alpha = .25,  size = 0.25)+
+  geom_line(data = BeliefData %>% filter(Slope1F =="Neutral", MoF == "Fact", Time != 3, Condition != 1), 
+            aes(x = Time, group = ID), color = 'deeppink2', 
+            alpha = .5,  size = 0.5)+
+  geom_line(data = BeliefData %>% filter(Slope2F =="Down", MoF == "Fact", Time != 1, Condition != 1), 
+            aes(x = Time, group = ID), color = 'springgreen3', 
+            alpha = .25,  size = 0.25)+
+  geom_line(data = BeliefData %>% filter(Slope2F =="Up", MoF == "Fact", Time != 1, Condition != 1), 
+            aes(x = Time, group = ID), color = 'darkblue', 
+            alpha = .5,  size = 0.35)+
+  geom_line(data = BeliefData %>% filter(Slope2F =="Neutral", MoF == "Fact", Time != 1, Condition != 1), 
+            aes(x = Time, group = ID), color = 'deeppink2', 
+            alpha = .5,  size = 0.5)+
+  geom_half_boxplot(data = BeliefData %>% filter(Time == "1", MoF == "Fact", Condition != 1), aes(x=Time, y = Value), 
+                    position = position_nudge(x = -.25), alpha = .5,
+                    side = "l",outlier.shape = NA, center = TRUE, 
+                    errorbar.draw = FALSE, width = .2, fill = 'dodgerblue2')+
+  geom_half_boxplot(data = BeliefData %>% filter(Time == "3", MoF == "Fact", Condition != 1), aes(x=Time, y = Value), 
+                    position = position_nudge(x = .25), alpha = .5, side = "r", outlier.shape = NA, center = TRUE, 
+                    errorbar.draw = FALSE, width = .2, fill = 'dodgerblue2')+
+  geom_boxplot(data = BeliefData %>% filter(Time == "2", MoF == "Fact", Condition != 1), aes(x=Time, y = Value),
+               alpha = .5, outlier.shape = NA, width = .1, fill = 'dodgerblue2')+
+  labs(x = "Retention Interval", y = "Belief Rating")+
+  ggtitle("Facts: Affirmation Condition")+
+  apa
+
+#Control, Misinfo 
+
+CM <- ggplot(data = BeliefData %>% filter(Condition == "1"), aes(y = Value))+
+  geom_point(data = BeliefData %>% filter(Time =="1", MoF == "Myth", Condition == "1"), 
+             aes(x = Time), color = 'dodgerblue2', size = 1.5, 
+             alpha = .2)+
+  geom_point(data = BeliefData %>% filter(Time =="2", MoF == "Myth", Condition == "1"), 
+             aes(x = Time), color = 'dodgerblue2', size = 1.5, 
+             alpha = .2)+
+  geom_point(data = BeliefData %>% filter(Time =="3", MoF == "Myth", Condition == "1"), 
+             aes(x = Time), color = 'dodgerblue2', size = 1.5, 
+             alpha = .2)+
+  scale_y_continuous(limits = c(0,10), breaks = c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10))+
+  scale_x_continuous(breaks = c(1, 2, 3), labels = c("Pre", "Immediate", "Delayed"))+
+  geom_line(data = BeliefData %>% filter(Slope1M =="Down", MoF == "Myth", Time != 3, Condition == "1"), 
+            aes(x = Time, group = ID), color = 'springgreen3', 
+            alpha = .25,  size = 0.25)+
+  geom_line(data = BeliefData %>% filter(Slope1M =="Up", MoF == "Myth", Time != 3, Condition == "1"), 
+            aes(x = Time, group = ID), color = 'darkblue', 
+            alpha = .25,  size = 0.25)+
+  geom_line(data = BeliefData %>% filter(Slope1M =="Neutral", MoF == "Myth", Time != 3, Condition == "1"), 
+            aes(x = Time, group = ID), color = 'deeppink2', 
+            alpha = .5,  size = 0.5)+
+  geom_line(data = BeliefData %>% filter(Slope2M =="Down", MoF == "Myth", Time != 1, Condition == "1"), 
+            aes(x = Time, group = ID), color = 'springgreen3', 
+            alpha = .25,  size = 0.25)+
+  geom_line(data = BeliefData %>% filter(Slope2M =="Up", MoF == "Myth", Time != 1, Condition == "1"), 
+            aes(x = Time, group = ID), color = 'darkblue', 
+            alpha = .25,  size = 0.25)+
+  geom_line(data = BeliefData %>% filter(Slope2M =="Neutral", MoF == "Myth", Time != 1, Condition == "1"), 
+            aes(x = Time, group = ID), color = 'deeppink2', 
+            alpha = .5,  size = 0.5)+
+  geom_half_boxplot(data = BeliefData %>% filter(Time == "1", MoF == "Myth", Condition == "1"), aes(x=Time, y = Value), 
+                    position = position_nudge(x = -.25), alpha = .5,
+                    side = "l",outlier.shape = NA, center = TRUE, 
+                    errorbar.draw = FALSE, width = .2, fill = 'dodgerblue2')+
+  geom_half_boxplot(data = BeliefData %>% filter(Time == "3", MoF == "Myth", Condition == "1"), aes(x=Time, y = Value), 
+                    position = position_nudge(x = .25), alpha = .5, side = "r", outlier.shape = NA, center = TRUE, 
+                    errorbar.draw = FALSE, width = .2, fill = 'dodgerblue2')+
+  geom_boxplot(data = BeliefData %>% filter(Time == "2", MoF == "Myth", Condition == "1"), aes(x=Time, y = Value),
+               alpha = .5, outlier.shape = NA, width = .1, fill = 'dodgerblue2')+
+  labs(x = "Retention Interval", y = "Belief Rating")+
+  ggtitle("Control Condition")+
+  apa
+
+#Control, Facts
+
+CF <- ggplot(data = BeliefData %>% filter(Condition == "1"), aes(y = Value))+
+  geom_point(data = BeliefData %>% filter(Time =="1", MoF == "Fact", Condition == "1"), 
+             aes(x = Time), color = 'dodgerblue2', size = 1.5, 
+             alpha = .2)+
+  geom_point(data = BeliefData %>% filter(Time =="2", MoF == "Fact", Condition == "1"), 
+             aes(x = Time), color = 'dodgerblue2', size = 1.5, 
+             alpha = .2)+
+  geom_point(data = BeliefData %>% filter(Time =="3", MoF == "Fact", Condition == "1"), 
+             aes(x = Time), color = 'dodgerblue2', size = 1.5, 
+             alpha = .2)+
+  scale_y_continuous(limits = c(0,10), breaks = seq(0, 10, 1))+
+  scale_x_continuous(breaks = c(1, 2, 3), labels = c("Pre", "Immediate", "Post"))+
+  geom_line(data = BeliefData %>% filter(Slope1F =="Down", MoF == "Fact", Time != 3, Condition == "1"), 
+            aes(x = Time, group = ID), color = 'springgreen3', 
+            alpha = .25,  size = 0.25)+
+  geom_line(data = BeliefData %>% filter(Slope1F =="Up", MoF == "Fact", Time != 3, Condition == "1"), 
+            aes(x = Time, group = ID), color = 'darkblue', 
+            alpha = .25,  size = 0.25)+
+  geom_line(data = BeliefData %>% filter(Slope1F =="Neutral", MoF == "Fact", Time != 3, Condition == "1"), 
+            aes(x = Time, group = ID), color = 'deeppink2', 
+            alpha = .5,  size = 0.5)+
+  geom_line(data = BeliefData %>% filter(Slope2F =="Down", MoF == "Fact", Time != 1, Condition == "1"), 
+            aes(x = Time, group = ID), color = 'springgreen3', 
+            alpha = .25,  size = 0.25)+
+  geom_line(data = BeliefData %>% filter(Slope2F =="Up", MoF == "Fact", Time != 1, Condition == "1"), 
+            aes(x = Time, group = ID), color = 'darkblue', 
+            alpha = .25,  size = 0.25)+
+  geom_line(data = BeliefData %>% filter(Slope2F =="Neutral", MoF == "Fact", Time != 1, Condition == "1"), 
+            aes(x = Time, group = ID), color = 'deeppink2', 
+            alpha = .5,  size = 0.5)+
+  geom_half_boxplot(data = BeliefData %>% filter(Time == "1", MoF == "Fact", Condition == "1"), aes(x=Time, y = Value), 
+                    position = position_nudge(x = -.25), alpha = .5,
+                    side = "l",outlier.shape = NA, center = TRUE, 
+                    errorbar.draw = FALSE, width = .2, fill = 'dodgerblue2')+
+  geom_half_boxplot(data = BeliefData %>% filter(Time == "3", MoF == "Fact", Condition == "1"), aes(x=Time, y = Value), 
+                    position = position_nudge(x = .25), alpha = .5, side = "r", outlier.shape = NA, center = TRUE, 
+                    errorbar.draw = FALSE, width = .2, fill = 'dodgerblue2')+
+  geom_boxplot(data = BeliefData %>% filter(Time == "2", MoF == "Fact", Condition == "1"), aes(x=Time, y = Value),
+               alpha = .5, outlier.shape = NA, width = .1, fill = 'dodgerblue2')+
+  labs(x = "Retention Interval", y = "Belief Rating")+
+  ggtitle("Facts: Control Condition")+
+  apa
+
+#This is how figures appear in manuscript
+
+plot_grid(CM, NCM)
+plot_grid(CF, NCF)
+
+```
+
+#Figure 3
+```{r}
+
+indv %>% 
+  filter(Condition != 1,
+         !id %in% bad_ids) %>% 
+  ggplot(aes(x = M_MonthM, y = RegressionIndexMisinfo))+
+  geom_point(color = "blue")+
+  labs(x = "Delayed Post Test Memory", y = "Regression Index")+
+  scale_y_continuous(limits = c(-2.5, 2.0),
+                     breaks = c(-2.5, -2.0, -1.5, -1.0, -.5, 0, .5, 1.0, 1.5, 2.0))+
+  scale_x_continuous(limits = c(0, 10), 
+                     breaks = c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10))+
+  geom_smooth(method = "lm", color = "red", se = FALSE)+
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = 1.0, ymax = Inf, alpha = .2, fill = "blue")+
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = 0, alpha = .2, fill = "red")+
+  apa+
+  theme(aspect.ratio = 1)
+
+```
+
+#Figure 4
+```{r}
+
+F4 <- data %>% 
+  select(Condition, BImm_1:BImm_16, BMonth_1:BMonth_16, MImm_1:MImm_16, MMonth_1:MMonth_16) %>% 
+  filter(Condition == 2 | Condition == 3) %>% 
+  pivot_longer(cols = BImm_1:MMonth_16, names_to = "Item", values_to = "Rating") %>%
+  mutate(Time = as.factor(case_when(grepl("Imm", Item) | grepl("Imm", Item) ~ "Immediate Post Test",
+                                    grepl("Month", Item) | grepl("Month", Item) ~ "Delayed Post Test"))) %>%
+  mutate(Item = ifelse(grepl("B", Item), "Belief", "Memory"),
+         ItemNumber = rep(1:16, times = 1640),
+         ID = rep(1:410, each = 64)) %>%
+  pivot_wider(names_from = "Item", values_from = "Rating") %>%
+  mutate(x = ifelse(Belief >= 6, "True",
+                    ifelse(Belief <= 4, "False", "Unsure")),
+         y = ifelse(Memory >= 6, "True",
+                    ifelse(Memory <= 4, "False", "Unsure"))) %>%
+  count(x, y, Time) %>% 
+  mutate(Percentage = (n/6560))
+
+F4$Percentage <- scales::label_percent(accuracy = .01, scale = 100, decimal.mark = ".")(F4$Percentage)
+F4$n2 <- F4$n
+F4$n2 <- paste0("(", F4$n2, ")")
+F4$x <- factor(F4$x, levels = c("True", "False", "Unsure"))
+F4$y <- factor(F4$y, levels = c("Unsure", "False", "True"))
+F4$Time <- factor(F4$Time, levels = c("Immediate Post Test", "Delayed Post Test"))
+F4$color <- as.factor(rep(1:9, times = 2))
+
+Imm <- ggplot(F4 %>% filter(Time == "Immediate Post Test"), aes(x,y))+
+  geom_tile(aes(fill = color))+
+  scale_fill_manual(values = c("red2", "springgreen", "gray96", "white", "gray96",
+                               "gray96", "gray96", "lightpink1", "gray96"))+
+  geom_text(aes(label = Percentage), size = 6)+
+  geom_text(aes(label = n2), size = 5, nudge_y = -.25)+
+  labs(x = "Belief", y = "Memory")+
+  coord_fixed()+
+  ggtitle("Immediate Post Test")+
+  theme(axis.line = element_blank(),
+        aspect.ratio = 1,
+        panel.background = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_text(size = 16, face = "bold"),
+        axis.text = element_text(size = 16),
+        plot.title = element_text(face = "bold", hjust = .5, size = 18),
+        legend.position = "none")
+
+Month <- ggplot(F4 %>% filter(Time == "Delayed Post Test"), aes(x,y))+
+  geom_tile(aes(fill = color))+
+  scale_fill_manual(values = c("springgreen", "gray96", "white", "gray96",
+                               "gray96", "gray96", "lightpink1", "gray96", "red2"))+
+  geom_text(aes(label = Percentage), size = 6)+
+  geom_text(aes(label = n2), size = 5, nudge_y = -.25)+
+  labs(x = "Belief", y = "")+
+  coord_fixed()+
+  ggtitle("Delayed Post Test")+
+  theme(axis.line = element_blank(),
+        aspect.ratio = 1,
+        panel.background = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_text(size = 16, face = "bold"),
+        axis.text = element_text(size = 16),
+        plot.title = element_text(face = "bold", hjust = .5, size = 18),
+        legend.position = "none")
+
+Fig4 <- grid.arrange(Imm, Month, nrow = 1, respect = TRUE)
+
+```
+
+#Figure 5
+```{r}
+
+reverse_score <- function(x)
+{
+  10 - x
+}
+
+WinsorPlot <- Winsor %>%
+  select(B_PreM:B_MonthF,
+         PreMW = B_PreM,
+         ImmMW = B_ImmM,
+         MonthMW = B_MonthM,
+         PreFW = B_PreF,
+         ImmFW = B_ImmF,
+         MonthFW = B_MonthF) %>% 
+  cbind(., indv) %>% 
+  filter(Condition == 2 | Condition == 3) %>% 
+  select(B_PreM, B_ImmM, B_MonthM, B_PreF, B_ImmF, B_MonthF,
+         PreMW, ImmMW, MonthMW, PreFW, ImmFW, MonthFW) %>%
+  mutate(across(c("B_PreM", "B_ImmM", "B_MonthM",
+                  "PreMW", "ImmMW", "MonthMW"), reverse_score)) %>%
+  map(t.test) %>% 
+  map_dfr(broom::tidy) %>% 
+  select(mean = estimate, CILow = conf.low, CIHigh = conf.high) %>% 
+  mutate(Item = c("BPreM", "BImmM", "BMonthM",
+                  "BPreF", "BImmF", "BMonthF",
+                  "BPreMW", "BImmMW", "BMonthMW",
+                  "BPreFW", "BImmFW", "BMonthFW")) %>%
+  mutate(MF = ifelse(grepl("F", Item), "Fact", "Misinformation"),
+         RI = case_when(grepl("Pre", Item) ~ "1",
+                        grepl("Imm", Item) ~ "2",
+                        grepl("Month", Item) ~ "3"),
+         W = ifelse(grepl("W", Item), "Winsorized Items", "All Items"),
+         Group = rep(1:4, each = 3),
+         MF = factor(MF, levels = c("Misinformation", "Fact")))
+
+pd <- position_dodge(0.25)
+
+All <- ggplot(WinsorPlot %>% filter(W == "All Items"), aes(RI, mean))+
+  geom_line(aes(group = Group, color = MF), position = pd)+
+  geom_pointrange(aes(color = MF, ymin = CILow, ymax = CIHigh), size = .5, position = pd)+
+  scale_y_continuous(limits = c(4, 10), breaks = seq(4,10,1))+
+  scale_x_discrete(labels = c("Pre", "Immediate", "Delayed"))+
+  scale_color_manual(values = c("red", "blue4"), name = "Type of Item")+
+  labs(x = "Retention Interval", y = "Belief")+
+  ggtitle("A")+
+  theme(legend.position = "none",
+        strip.background=element_blank(),
+        axis.ticks.y=element_line(size=.3,color="black"),
+        axis.text.x=element_text(size=14,color="black"),
+        axis.text.y=element_text(size=14,color="black"),
+        axis.title = element_text(size = 16),
+        plot.title = element_text(size = 16, color = "black", face = "bold"), 
+        panel.background = element_blank(),
+        panel.spacing.x = unit(-.01, "in"),
+        panel.border = element_rect(size = .5, fill = NA, color = "black"))
+
+
+W <- ggplot(WinsorPlot %>% filter(W == "Winsorized Items"), aes(RI, mean))+
+  geom_line(aes(group = Group, color = MF), position = pd)+
+  geom_pointrange(aes(color = MF, ymin = CILow, ymax = CIHigh), size = .5, position = pd)+
+  scale_y_continuous(limits = c(4, 10), breaks = seq(4,10,1))+
+  scale_x_discrete(labels = c("Pre", "Immediate", "Delayed"))+
+  scale_color_manual(values = c("red", "blue4"), name = "Type of Item")+
+  labs(x = "Retention Interval", y = "Belief")+
+  ggtitle("B")+
+  theme(legend.position = "none",
+        strip.background=element_blank(),
+        axis.ticks.y=element_line(size=.3,color="black"),
+        axis.text.x=element_text(size=14,color="black"),
+        axis.text.y=element_text(size=14,color="black"),
+        axis.title = element_text(size = 16),
+        plot.title = element_text(size = 16, color = "black", face = "bold"), 
+        panel.background = element_blank(),
+        panel.spacing.x = unit(-.01, "in"),
+        panel.border = element_rect(size = .5, fill = NA, color = "black"))
+
+ggpubr::ggarrange(All, W, nrow = 1, common.legend = T, legend = "bottom")
+
+```
+
+#Figure S1
+```{r}
+
+SF1 <- indv %>% 
+  filter(Condition == 2 | Condition == 3) %>% 
+  select(B_ImmF, B_MonthF, M_ImmF, M_MonthF) %>% 
+  pivot_longer(cols = "B_ImmF":"M_MonthF", names_to = "Items", values_to = "Rating") %>% 
+  mutate(Time = ifelse(grepl("Imm", Items), "Immediate Post Test", "One-Month Delayed Post Test"),
+         Items = ifelse(grepl("B_", Items), "Belief", "Memory"),
+         ID = rep(1:410, each = 4)) %>% 
+  pivot_wider(names_from = "Items", values_from = "Rating")
+
+Imm <- ggplot(data = SF1 %>%filter(Time == "Immediate Post Test"), aes(Belief, Memory))+
+  geom_point(color = "blue")+
+  labs(x = "Belief", y = "Memory")+
+  ggtitle("Facts: Immediate Post Test")+
+  scale_y_continuous(breaks = seq(0,10,1))+
+  scale_x_continuous(breaks = seq(0,10,1))+
+  geom_smooth(method = "lm", color = "red", se = FALSE)+
+  apa+
+  theme(strip.text = element_text(size = 18, face = "bold"),
+        aspect.ratio = 1)
+
+Month <- ggplot(data = SF1 %>%filter(Time == "One-Month Delayed Post Test"), aes(Belief, Memory))+
+  geom_point(color = "blue")+
+  labs(x = "Belief", y = "Memory")+
+  ggtitle("Facts: One-Month Delayed Post Test")+
+  scale_y_continuous(breaks = seq(0,10,1), limits = c(0,10,1))+
+  scale_x_continuous(breaks = seq(0,10,1))+
+  geom_smooth(method = "lm", color = "red", se = FALSE)+
+  apa+
+  theme(strip.text = element_text(size = 18, face = "bold"),
+        aspect.ratio = 1)
+
+Fig1 <- grid.arrange(Imm, Month, nrow = 1, respect = TRUE)
+
+```
+
+#Supplementary Figure 3
+```{r}
+
+indv %>% 
+  filter(Condition != 1,
+         !id %in% bad_ids) %>% 
+  ggplot(aes(x = M_MonthF, y = RegressionIndexFacts))+ 
+  geom_point(aplha = .5, color = "blue")+
+  labs(x = "Delayed Post Test Memory", y = "Regression Index")+
+  scale_y_continuous(limits = c(-2.5, 2.0),
+                     breaks = c(-2.5, -2.0, -1.5, -1.0, -.5, 0, .5, 1.0, 1.5, 2.0))+
+  scale_x_continuous(limits = c(0, 10), 
+                     breaks = c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10))+
+  geom_smooth(method = "lm", color = "red", se = FALSE)+
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = 1.0, ymax = Inf, alpha = .2, fill = "blue")+
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = 0, alpha = .2, fill = "red")+
+  ggtitle("Facts: Belief Regression Index vs. Affirmation Memory at One-Month")+
+  apa+
+  theme(aspect.ratio = 1)
+
+```
+
+#Supplementary Figure 4
+```{r}
+
+SF4 <- data %>% 
+  select(Condition, BImm_17:BImm_32, BMonth_17:BMonth_32, MImm_17:MImm_32, MMonth_17:MMonth_32) %>% 
+  filter(Condition == 2 | Condition == 3) %>% 
+  pivot_longer(cols = BImm_17:MMonth_32, names_to = "Item", values_to = "Rating") %>%
+  mutate(Time = as.factor(case_when(grepl("Imm", Item) | grepl("Imm", Item) ~ "Immediate Post Test",
+                                    grepl("Month", Item) | grepl("Month", Item) ~ "Delayed Post Test"))) %>%
+  mutate(Item = ifelse(grepl("B", Item), "Belief", "Memory"),
+         ItemNumber = rep(1:16, times = 1640),
+         ID = rep(1:410, each = 64)) %>%
+  pivot_wider(names_from = "Item", values_from = "Rating") %>%
+  mutate(x = ifelse(Belief >= 6, "True",
+                    ifelse(Belief <= 4, "False", "Unsure")),
+         y = ifelse(Memory >= 6, "True",
+                    ifelse(Memory <= 4, "False", "Unsure"))) %>%
+  count(x, y, Time) %>% 
+  mutate(Percentage = (n/6560))
+
+SF4$Percentage <- label_percent(accuracy = .01, scale = 100, decimal.mark = ".")(SF4$Percentage)
+SF4$n2 <- SF4$n
+SF4$n2 <- paste0("(", SF4$n2, ")")
+SF4$x <- factor(SF4$x, levels = c("True", "False", "Unsure"))
+SF4$y <- factor(SF4$y, levels = c("Unsure", "False", "True"))
+SF4$Time <- factor(SF4$Time, levels = c("Immediate Post Test", "Delayed Post Test"))
+SF4$color <- as.factor(rep(1:9, times = 2))
+
+Imm <- ggplot(SF4 %>% filter(Time == "Immediate Post Test"), aes(x,y))+
+  geom_tile(aes(fill = color))+
+  scale_fill_manual(values = c("springgreen", "red2", "gray96", "lightpink1", "gray96",
+                               "gray96", "gray96", "white", "gray96"))+
+  geom_text(aes(label = Percentage), size = 6)+
+  geom_text(aes(label = n2), size = 5, nudge_y = -.25)+
+  labs(x = "Belief", y = "Memory")+
+  coord_fixed()+
+  ggtitle("Facts: Immediate Post Test")+
+  theme(axis.line = element_blank(),
+        aspect.ratio = 1,
+        panel.background = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_text(size = 16, face = "bold"),
+        axis.text = element_text(size = 16),
+        plot.title = element_text(face = "bold", hjust = .5, size = 18),
+        legend.position = "none")
+
+Month <- ggplot(SF4 %>% filter(Time == "Delayed Post Test"), aes(x,y))+
+  geom_tile(aes(fill = color))+
+  scale_fill_manual(values = c("red2", "gray96", "lightpink1", "gray96",
+                               "gray96", "gray96", "white", "gray96", "springgreen"))+
+  geom_text(aes(label = Percentage), size = 6)+
+  geom_text(aes(label = n2), size = 5, nudge_y = -.25)+
+  labs(x = "Belief", y = "")+
+  coord_fixed()+
+  ggtitle("Facts: One-Month Delayed Post Test")+
+  theme(axis.line = element_blank(),
+        aspect.ratio = 1,
+        panel.background = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_text(size = 16, face = "bold"),
+        axis.text = element_text(size = 16),
+        plot.title = element_text(face = "bold", hjust = .5, size = 18),
+        legend.position = "none")
+
+SuppFig4 <- grid.arrange(Imm, Month, nrow = 1, respect = TRUE)
+
+```
+
+#Supplementary Figure 5
+```{r}
+
+total_ages <- ggplot(indv, aes(Age))+
+  geom_bar(stat = "count")+
+  scale_y_continuous(limits = c(0,35), breaks = seq(0,35,5), expand = c(0, 0))+
+  scale_x_continuous(breaks = seq(20, 75, 5), expand = c(0,0))+
+  labs(title = "Distribution of Ages - Total Sample", y = "Count")+
+  theme(legend.position = "none",
+        strip.background=element_blank(),
+        axis.ticks.y=element_line(size=.3,color="black"),
+        axis.text.x=element_text(size=14,color="black"),
+        axis.text.y=element_text(size=14,color="black"),
+        axis.title = element_text(size = 16),
+        plot.title = element_text(size = 16, color = "black", hjust = .5, face = "bold"), 
+        panel.background = element_blank(),
+        panel.spacing.x = unit(-.01, "in"),
+        panel.border = element_rect(size = .5, fill = NA, color = "black"))
+
+```
+
+#Supplementary Figure 6
+```{r}
+
+Imm_Item <- items %>% 
+  tibble %>% 
+  filter(MythFact == "M") %>% 
+  ggplot(., aes(BImm, MImm))+
+  geom_point(color = "blue")+
+  labs(x = "Belief", y = "Memory")+
+  ggtitle("Immediate Post Test")+
+  scale_x_continuous(breaks = seq(1.0, 2.4, .2))+
+  scale_y_continuous(breaks = seq(.6, 1.6, .2))+
+  geom_smooth(method = "lm", color = "red", se = FALSE)+
+  apa+
+  theme(strip.text = element_text(size = 18, face = "bold"),
+        aspect.ratio = 1)
+
+Month_Item <- items %>% 
+  tibble %>% 
+  filter(MythFact == "M") %>% 
+  ggplot(., aes(BMonth, MMonth))+
+  geom_point(color = "blue")+
+  labs(x = "Belief", y = "Memory")+
+  ggtitle("Delayed Post Test")+
+  scale_x_continuous(breaks = seq(2, 5, 1))+
+  scale_y_continuous(breaks = seq(1, 5, 1), limits = c(1.2, 4.6))+
+  geom_smooth(method = "lm", color = "red", se = FALSE)+
+  apa+
+  theme(strip.text = element_text(size = 18, face = "bold"),
+        aspect.ratio = 1)
+
+gridExtra::grid.arrange(Imm_Item, Month_Item, nrow = 1, respect = TRUE)
+
+```
+

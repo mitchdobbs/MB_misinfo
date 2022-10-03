@@ -1,0 +1,647 @@
+---
+title: "MB - Analyses_FINAL"
+author: "Mitch Dobbs"
+date: "2022-08-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+#Load data, libraries
+```{r, message=FALSE, warning=FALSE}
+rm(list = ls())
+
+library(tidyverse)
+library(rstatix) #for mixed model ANOVAs
+library(broom)
+library(magrittr)
+
+data <- read.csv("/Users/mitchdobbs/Desktop/R/MemBelief/Run CSV/Data.csv")
+
+```
+
+#Make dataframes
+```{r}
+#Dataframe for responses collapsed across items (i.e., data by participant)
+
+#Items 1-16 = misinfo. Items 17-32 = facts. 
+mismatch <- "_(1[0-6]|[1-9])$" #matches #s 1-16
+factmatch <- "_(1[7-9]|2[0-9]|3[0-2])$" #matches #s 17-32
+
+indv <- data %>% 
+  tibble %>% 
+  mutate(Party = case_when(Party.General == "Democrat" | Party.Closer == "Closer to the Democratic Party" ~ 1,
+                           Party.General == "Republican" | Party.Closer == "Closer to the Republican Party" ~ 2,
+                           Party.General == "Other Party" | Party.Closer == "Neither" ~ 3)) %>%
+  select(Condition, Gender, Age, Education, Party, BPre_1:MMonth_32) %>% 
+  mutate(id = row_number()) %>%
+  relocate(id, .before = Condition) %>% 
+  group_by(id) %>% 
+  nest(B_PreM = contains("BPre") & matches(mismatch),
+       B_ImmM = contains("BImm") & matches(mismatch),
+       B_MonthM = contains("BMonth") & matches(mismatch),
+       M_ImmM = contains("MImm") & matches(mismatch),
+       M_MonthM = contains("MMonth") & matches(mismatch),
+       B_PreF = contains("BPre") & matches(factmatch),
+       B_ImmF = contains("BImm") & matches(factmatch),
+       B_MonthF = contains("BMonth") & matches(factmatch),
+       M_ImmF = contains("MImm") & matches(factmatch),
+       M_MonthF = contains("MMonth") & matches(factmatch)) %>% 
+  pivot_longer(cols = B_PreM:M_MonthF) %>% 
+  mutate(value = map(value, rowMeans)) %>% 
+  pivot_wider(names_from = name, values_from = value) %>% 
+  unnest(B_PreM:M_MonthF) %>% 
+  ungroup() %>% 
+  mutate(RegressionIndexMisinfo = (B_MonthM - B_ImmM)/(B_PreM - B_ImmM),
+         RegressionIndexFacts = (B_MonthF - B_ImmF)/(B_PreF - B_ImmF)) %>% 
+  select(id, Condition, Gender, Age, Education, Party, B_PreM:RegressionIndexFacts) %>%
+  mutate(across(starts_with("Regression"), ~ifelse(abs(.) == Inf, NA, .)))
+
+#Dataframe for means/regression index by item
+
+items <- data %>% 
+  select(Condition, BPre_1:MMonth_32) %>% 
+  filter(Condition == 2 | Condition == 3) %>% 
+  select(-Condition) %>%
+  pivot_longer(cols = "BPre_1":"MMonth_32",
+               names_to = "Item",
+               values_to = "Mean") %>% 
+  mutate(ItemNumber = rep(1:32, times = 2050),
+         Time = as.factor(case_when(grepl("Pre", Item) ~ "BPre",
+                                    grepl("BImm", Item) ~ "BImm",
+                                    grepl("BMonth", Item) ~ "BMonth",
+                                    grepl("MImm", Item) ~ "MImm",
+                                    grepl("MMonth", Item) ~ "MMonth")),
+         Time = factor(Time, levels = c("BPre", "BImm", "BMonth", "MImm", "MMonth"))) %>% 
+  group_by(ItemNumber, Time) %>% 
+  summarise(Mean = mean(Mean), .groups = "drop") %>% 
+  pivot_wider(names_from = "Time", values_from = "Mean") %>% 
+  mutate(RegressionIndex = (BMonth - BImm)/(BPre - BImm)) %>%  
+  round(digits = 3) %>% 
+  mutate(MythFact = ifelse(ItemNumber >= 17, "F", "M")) %>% 
+  select(ItemNumber, MythFact, BPre:RegressionIndex)
+
+#Dataframe for Winsorized items
+
+#Ranks items, pulls vector of ranked item numbers 
+winsor_list <- data %>% 
+  select(Condition, BPre_1:BPre_32) %>% 
+  filter(Condition == 2 | Condition == 3) %>% 
+  select(-Condition) %>% 
+  pivot_longer(cols = "BPre_1":"BPre_32", names_to = "Item", values_to = "Mean") %>% 
+  mutate(ItemNumber = rep(1:32, times = 410),
+         Myth_Fact = ifelse(ItemNumber < 17, "Myth", "Fact")) %>% 
+  group_by(ItemNumber, Myth_Fact) %>% 
+  summarise(Rating = mean(Mean)) %>% 
+  pivot_wider(names_from = "Myth_Fact", values_from = "Rating") %>%
+  as.data.frame(.) %>%
+  arrange(., Myth, Fact) %>% 
+  slice(1:8, 17:24) %>% 
+  pull(ItemNumber) %>% 
+  as.character(.)
+
+#Creates a df of these items (i.e., highest and lowest eight)
+winsormyth = "_([0-9]|1[1-4])$" #Matches winsorized misinfo
+winsorfact = "_(1[8-9]|2[0-9]|3[1-2])$" #matches winsorized facts
+
+Winsor <- data %>% 
+  mutate(id = row_number()) %>% 
+  select(id, Condition, BPre_1:MMonth_32) %>% 
+  pivot_longer(-c(id, Condition)) %>% 
+  mutate(item = str_extract_all(name, "\\d+")) %>% 
+  filter(item %in% winsor_list) %>% 
+  select(-item) %>% 
+  group_by(id) %>% 
+  pivot_wider(names_from = name, values_from = value) %>% 
+  nest(B_PreM = contains("BPre") & matches(winsormyth),
+       B_ImmM = contains("BImm") & matches(winsormyth),
+       B_MonthM = contains("BMonth") & matches(winsormyth),
+       M_ImmM = contains("MImm") & matches(winsormyth),
+       M_MonthM = contains("MMonth") & matches(winsormyth),
+       B_PreF = contains("BPre") & matches(winsorfact),
+       B_ImmF = contains("BImm") & matches(winsorfact),
+       B_MonthF = contains("BMonth") & matches(winsorfact),
+       M_ImmF = contains("MImm") & matches(winsorfact),
+       M_MonthF = contains("MMonth") & matches(winsorfact)) %>% 
+  pivot_longer(-c(id, Condition)) %>% 
+  mutate(value = map(value, rowMeans)) %>% 
+  pivot_wider(names_from = name, values_from = value) %>% 
+  unnest(everything()) %>% 
+  ungroup() %>% 
+  select(-id) %>% 
+  select(Condition, B_PreM, B_ImmM, B_MonthM,B_PreF, B_ImmF, B_MonthF,M_ImmM, M_MonthM, M_ImmF, M_MonthF)
+
+```
+
+#Custom functions 
+```{r}
+
+#For cohen's D
+cohens_D <- function(x, y){
+  x1 <- mean(x)
+  sd1 <- sd(x)
+  x2 <- mean(y)
+  sd2 <- sd(y)
+  n1 = length(x)
+  n2 = length(y)
+  sp1 <- (((n1 - 1)*sd1^2) + ((n2 -1)*sd2^2))/(n1+n2 -2)
+  sp <- sqrt(sp1)
+  d <- (x1 - x2)/sp
+  return(d)
+}
+
+#For cleaning up chi sqs.
+chi_sq_table <- function(x1, x2, x3, x4)
+{
+  R1 = c(x1, x2)
+  R2 = c(x3, x4)
+  rows   = 2
+  M = matrix(c(R1, R2),
+              nrow=rows,
+              byrow=TRUE)
+  chisq.test(M)
+}
+
+#For item reliabilites -- returns a list of spearman correlation coefficients, sample sizes, and p values
+get_reliability <- function(time){
+  
+  x = deparse(substitute(time))
+  y = paste0("B", x)
+  
+  corr <- data %>% 
+    select(Condition, BPre_1:BPre_32, contains(y)) %>% 
+    filter(Condition == 1) %>% 
+    select(-c(Condition)) %>%
+    as.matrix() %>% 
+    Hmisc::rcorr(type = "spearman")
+  
+}
+
+#IF YOU WANT SPEARMAN COEFF AND ASSC. PVAL -- run this function 
+get_values <- function(x){
+  
+  coeff <<- as.data.frame(x[["r"]]) %>%
+    rownames_to_column(var = "R1") %>% 
+    slice(-c(1:32)) %>% 
+    select(R1, BPre_1:BPre_32)
+  
+  pvals <<- as.data.frame(x[["P"]]) %>%
+    rownames_to_column(var = "R1") %>% 
+    slice(-c(1:32)) %>% 
+    select(R1, BPre_1:BPre_32)
+  
+}
+
+```
+
+#Balanced group and reliability 
+```{r}
+
+#Test-retest reliability
+
+indv %>%
+  filter(Condition == 1) %>%
+  select(B_PreM, B_ImmM, B_MonthM, B_PreF, B_ImmF, B_MonthF) %>%
+  as.matrix() %>% 
+  Hmisc::rcorr(., type = "spearman")
+
+#Individual item reliabilities
+
+Imm <- get_reliability(Imm)
+Month <- get_reliability(Month)
+
+#Checking balance of demographics across groups
+
+#Gender
+
+table(indv$Gender, indv$Condition) %>% chisq.test(.) 
+
+#Age
+
+aov(Age ~ Condition, data = indv) %>% summary(.)
+
+#Descriptive stats for age in each condition 
+
+by(data$Age, INDICES = data$Condition, FUN = pastecs::stat.desc)
+
+#Education
+
+aov(Education ~ Condition, data = indv) %>% summary(.) 
+count(indv, Condition, Education) #Counting education level across conditions 
+
+#Party 
+
+table(indv$Party, indv$Condition) %>% chisq.test(Party)
+
+#Baseline Beliefs
+
+data %>% 
+  select(Condition, contains("BPre")) %>%
+  mutate(mean = rowMeans(.[,c(2:33)])) %>% 
+  select(Condition, mean) %>% 
+  aov(mean ~ Condition, data = .) %>% 
+  summary(.)
+
+```
+
+
+#The Influence of Reporting Memory Prior to Belief
+```{r}
+
+#Does rating memory prior to belief influence belief ratings?
+
+#Belief
+indv %>% 
+  select(Condition, B_ImmM, B_MonthM) %>% 
+  filter(Condition == 2 | Condition == 3) %>% 
+  pivot_longer(cols = "B_ImmM":"B_MonthM", names_to = "Belief", values_to = "B") %>% 
+  mutate(ID = rep(1:410, each = 2),
+         Time = ifelse(grepl("Imm", Belief), "1", "2")) %>%
+  anova_test(., dv = B, wid = ID, between = "Condition", within = "Time", effect.size = "pes") %>% 
+  get_anova_table(.)
+  
+#Memory
+indv %>% 
+  select(Condition, M_ImmM, M_MonthM) %>% 
+  filter(Condition == 2 | Condition == 3) %>% 
+  pivot_longer(cols = "M_ImmM":"M_MonthM", names_to = "Memory", values_to = "M") %>% 
+  mutate(Time = ifelse(grepl("Imm", Memory), "1", "2"),
+         ID = rep(1:410, each = 2)) %>% 
+  anova_test(., dv = M, wid = ID, between = "Condition", within = "Time", effect.size = "pes") %>% 
+  get_anova_table(.)
+
+```
+
+#The Association Between Memory and Belief After Corrective Information
+```{r}
+
+#Belief in misinformation/facts at immediate and delayed post tests correlated with memory 
+#See cocor package for details regarding correlation comparison. We report Dunn & Clark (1969) in the manuscript,
+#as well as Zou's confidence interval. 
+
+#Misinformation
+  
+cor.test(indv$B_ImmM, indv$M_ImmM, method = "spearman")
+cor.test(indv$B_MonthM, indv$M_MonthM, method = "spearman")
+
+cocor::cocor(~ B_ImmM + M_ImmM | B_MonthM + M_MonthM,
+             data = as.data.frame(indv))
+
+cocor::cocor.dep.groups.nonoverlap(r.jk = .51, r.hm = .82,
+                                   r.jh = .73, r.jm = .39,
+                                   r.kh = .44, r.km = .49, n = 410)
+#Facts
+
+cor.test(indv$B_ImmF, indv$M_ImmF, method = "spearman")
+cor.test(indv$B_MonthF, indv$M_MonthF, method = "spearman")
+
+cocor::cocor.dep.groups.nonoverlap(r.jk = .51, r.hm = .85,
+                                   r.jh = .71, r.jm = .44,
+                                   r.kh = .40, r.km = .39, n = 410)
+
+#Robustness check/footnote 4
+
+#Item Level correlations between memory and belief 
+
+#Immediate Post Test
+
+items %>% 
+  tibble %>% 
+  filter(ItemNumber <= 16, MythFact == "M") %>% 
+  summarise(cor.test(.$BImm, .$MImm, method = "spearman") %>% tidy)
+
+#One-Month Delayed Post Test
+items %>% 
+  tibble %>% 
+  filter(ItemNumber <= 16, MythFact == "M") %>% 
+  summarise(cor.test(.$BMonth, .$MMonth, method = "spearman") %>% tidy)
+
+```
+
+#The Role of Memory in Belief Regression
+```{r}
+#2 (Control or Correction) × 2 (Immediate or Month-Delayed Post Test) on Belief Ratings
+
+#Misinformation
+indv %>% 
+  select(Condition, B_ImmM, B_MonthM) %>%
+  pivot_longer(cols = "B_ImmM":"B_MonthM", names_to = "Belief", values_to = "B") %>% 
+  mutate(ID = rep(1:612, each = 2),
+         Control = ifelse(Condition == 1, "yes", "no"),
+         Time = ifelse(grepl("Imm", Belief), "1", "2")) %>% 
+  anova_test(., dv = B, wid = ID, between = "Control", within = "Time", effect.size = "pes", 
+                       detailed = TRUE) %>% 
+  get_anova_table(.) 
+
+#Excluding participants based on criteria explained in footnote 5
+
+#Who has two negatives (i.e., backfire immediately and reduce at one month)
+
+indv %>% 
+  tibble %>% 
+  select(Condition, B_PreM, B_ImmM, B_MonthM) %>% 
+  filter(Condition !=1) %>% 
+  mutate(id = rep(1:n())) %>% 
+  relocate(id, .before = "B_PreM") %>% 
+  select(-Condition) %>% 
+  mutate(Pre_Imm = B_PreM - B_ImmM) %>% 
+  filter(Pre_Imm < 0) %>% 
+  filter(B_MonthM < B_ImmM)
+
+#Who backfires twice
+
+indv %>% 
+  tibble %>% 
+  select(id, Condition, B_PreM, B_ImmM, B_MonthM) %>% 
+  filter(Condition !=1) %>% 
+  select(-Condition) %>% 
+  filter(B_ImmM > B_PreM & B_MonthM > B_ImmM)
+
+#Denominator is 0
+
+indv %>% 
+  filter(Condition != 1) %>% 
+  select(id, B_PreM, B_ImmM, RegressionIndexMisinfo) %>% 
+  filter(is.na(RegressionIndexMisinfo))
+
+bad_ids <- c(78, 259, 353, 230, 233, 333, 335, 336, 479, 610)
+
+#Counts for who scores where in Figure 3 
+
+indv %>% 
+  tibble %>% 
+  filter(Condition != 1, !id %in% bad_ids) %>% 
+  select(RegressionIndexMisinfo) %>% 
+  mutate(Zone = case_when(RegressionIndexMisinfo > 0 & RegressionIndexMisinfo < 1 ~ "White",
+                          RegressionIndexMisinfo <= 0 ~ "Red",
+                          RegressionIndexMisinfo >= 1 ~ "Blue") %>% 
+           factor(c("White", "Red", "Blue"))) %>% 
+  count(Zone) %>% 
+  mutate(percentage = (n/401)*100)
+
+#Belief Reg Index x Memory at One-Month
+indv %>% 
+  filter(!Condition == 1,
+         !id %in% bad_ids) %>% 
+  summarise(cor.test(.$RegressionIndexMisinfo, .$M_MonthM, method = "spearman") %>% tidy)
+
+#Belief Reg Index x Memory Subtraction score
+indv %>% 
+  filter(Condition != 1) %>% 
+  select(id, RegressionIndexMisinfo, M_ImmM, M_MonthM) %>% 
+  mutate(difference = M_MonthM - M_ImmM) %>% 
+  filter(!id %in% bad_ids) %>% 
+  summarise(cor.test(.$RegressionIndexMisinfo, .$difference, method = "spearman") %>% tidy)
+
+#Reliability of memory at delayed post test
+
+data %>% 
+  filter(Condition != 1) %>% 
+  select(contains("MMonth")) %>%
+  mutate(id = row_number()) %>% 
+  select(matches("_(1[0-6]|[1-9])$")) %>%
+  psych::alpha(.)
+  #Lambda4::lambda2(.)
+
+#Spearman-Brown split-half reliability of the belief regression index
+
+data %>% 
+  filter(Condition != 1) %>% 
+  select(contains(c("BPre", "BImm", "BMonth"))) %>%
+  mutate(id = row_number()) %>% 
+  select(id, matches("_(1[0-6]|[1-9])$")) %>% 
+  nest(PreE = contains("Pre") & matches(even),
+       ImmE = contains("Imm") & matches(even),
+       MonthE = contains("Month") & matches(even),
+       PreO = contains("Pre") & matches(odd),
+       ImmO = contains("Imm") & matches(odd),
+       MonthO = contains("Month") & matches(odd)) %>% 
+  pivot_longer(-id) %>% 
+  mutate(value = map(value, rowMeans)) %>%
+  pivot_wider(names_from = name, values_from = value) %>% 
+  unnest(everything()) %>% 
+  mutate(BRE = (MonthE - ImmE)/(PreE - ImmE),
+         BRO = (MonthO - ImmO)/(PreO - ImmO)) %>% 
+  filter(across(c(BRE, BRO), is.finite)) %>% 
+  summarise(cor.test(.$BRE, .$BRO, method = "spearman") %>% tidy) %>% 
+  mutate(SB = (.$estimate*2)/(1 + .$estimate)) %>% 
+  relocate(SB, .before = estimate)
+
+#BRI x Memory correlation -- item level 
+data %>% 
+  tibble %>% 
+  mutate(id = rep(1:n())) %>% 
+  relocate(id, .before = Condition) %>% 
+  select(id, Condition, BPre_1:MMonth_32) %>% 
+  filter(Condition == 2 | Condition == 3,
+         !id %in% bad_ids) %>% 
+  select(-Condition) %>%
+  pivot_longer(cols = "BPre_1":"MMonth_32",
+               names_to = "Item",
+               values_to = "Mean") %>% 
+  mutate(ItemNumber = rep(1:32, times = 2005),
+         Time = as.factor(case_when(grepl("Pre", Item) ~ "BPre",
+                                    grepl("BImm", Item) ~ "BImm",
+                                    grepl("BMonth", Item) ~ "BMonth",
+                                    grepl("MImm", Item) ~ "MImm",
+                                    grepl("MMonth", Item) ~ "MMonth")),
+         Time = factor(Time, levels = c("BPre", "BImm", "BMonth", "MImm", "MMonth"))) %>% 
+  group_by(ItemNumber, Time) %>% 
+  summarise(Mean = mean(Mean), .groups = "drop") %>% 
+  pivot_wider(names_from = "Time", values_from = "Mean") %>% 
+  mutate(RegressionIndex = (BMonth - BImm)/(BPre - BImm)) %>%  
+  round(digits = 3) %>% 
+  mutate(MythFact = ifelse(ItemNumber >= 17, "F", "M")) %>% 
+  select(ItemNumber, MythFact, BPre:RegressionIndex) %>% 
+  filter(MythFact == "M") %>% 
+  summarise(cor.test(.$RegressionIndex, .$MMonth, method = "spearman") %>% tidy)
+
+#Correlating age with belief regression index
+
+indv %>% 
+  tibble %>% 
+  filter(!Condition == 1) %>% 
+  filter(!id %in% bad_ids) %>% 
+  summarise(cor.test(.$Age, .$RegressionIndexMisinfo, method = "spearman") %>% tidy)
+
+#Correlating surprise with belief regression index
+
+data %>% 
+  tibble %>% 
+  mutate(id = rep(1:n())) %>% 
+  filter(Condition != 1) %>% 
+  select(id, starts_with("S")) %>% 
+  select(1:17) %>% 
+  pivot_longer(-id) %>% 
+  group_by(id) %>% 
+  summarise(Surprise_M = mean(value)) %>% 
+  left_join(indv) %>% 
+  select(id, Surprise_M, RegressionIndexMisinfo) %>% 
+  filter(!id %in% bad_ids) %>% 
+  summarise(cor.test(.$RegressionIndexMisinfo, .$Surprise_M, method = "spearman") %>% tidy)
+
+```
+
+#Dissenting vs. Forgetting Over Time
+```{r}
+
+F4 <- data %>% 
+  select(Condition, BImm_1:BImm_16, BMonth_1:BMonth_16, MImm_1:MImm_16, MMonth_1:MMonth_16) %>% 
+  filter(Condition == 2 | Condition == 3) %>% 
+  pivot_longer(cols = BImm_1:MMonth_16, names_to = "Item", values_to = "Rating") %>%
+  mutate(Time = as.factor(case_when(grepl("Imm", Item) | grepl("Imm", Item) ~ "Immediate Post Test",
+                                    grepl("Month", Item) | grepl("Month", Item) ~ "Delayed Post Test"))) %>%
+  mutate(Item = ifelse(grepl("B", Item), "Belief", "Memory"),
+         ItemNumber = rep(1:16, times = 1640),
+         ID = rep(1:410, each = 64)) %>%
+  pivot_wider(names_from = "Item", values_from = "Rating") %>%
+  mutate(x = ifelse(Belief >= 6, "True",
+                    ifelse(Belief <= 4, "False", "Unsure")),
+         y = ifelse(Memory >= 6, "True",
+                    ifelse(Memory <= 4, "False", "Unsure"))) %>%
+  count(x, y, Time) %>% 
+  mutate(Percentage = (n/6560))
+
+F4$Percentage <- scales::label_percent(accuracy = .01, scale = 100, decimal.mark = ".")(F4$Percentage)
+F4$n2 <- F4$n
+F4$n2 <- paste0("(", F4$n2, ")")
+F4$x <- factor(F4$x, levels = c("True", "False", "Unsure"))
+F4$y <- factor(F4$y, levels = c("Unsure", "False", "True"))
+F4$Time <- factor(F4$Time, levels = c("Immediate Post Test", "Delayed Post Test"))
+F4$color <- as.factor(rep(1:9, times = 2))
+
+F4
+
+#Note - comments represent percentages discussed in manuscript, function inputs from Fig. 4
+
+#7.01 vs 6.19
+chi_sq_table(6100, 460, 6154, 406)
+
+#59.82 vs. 22.57
+chi_sq_table(309, 460, 1393, 406)
+
+#4.13 vs 15.59
+chi_sq_table(6289, 271, 5537, 1023)
+
+#35.24 vs. 56.86
+chi_sq_table(498, 271, 776, 1023)
+
+#4.71 vs 21.23 -- see footnote 7
+chi_sq_table(6251, 309, 5167, 1393)
+
+```
+
+#Asymmetry in Belief Regression for Misinformation vs. Facts
+```{r}
+
+#2 (Myth or Fact) x 3 (Pre, Imm, Month) on Belief Ratings (all items)
+
+indv %>%
+  select(Condition, B_PreM:B_MonthM, B_PreF:B_MonthF) %>% 
+  filter(Condition == 2 | Condition == 3) %>% 
+  mutate(B_PreM = 10 - B_PreM,
+         B_ImmM = 10 - B_ImmM,
+         B_MonthM = 10 - B_MonthM) %>%
+  pivot_longer("B_PreM":"B_MonthF", names_to = "Items", values_to = "Rating") %>% 
+  mutate(Time = ifelse(grepl("Pre", Items), "1",
+                            ifelse(grepl("Imm", Items), "2", "3")),
+         MythFact = ifelse(grepl("F", Items), "Fact", "Myth"),
+         ID = rep(1:410, each = 6)) %>%  
+  anova_test(., dv = Rating, wid = ID, within = c("MythFact", "Time"), effect.size = "pes",
+                        detailed = T) %>% 
+  get_anova_table(.)
+
+#T-test for misinformation and facts at pre-test
+
+indv %>% 
+  filter(Condition != 1) %>% 
+  select(B_PreM, B_PreF) %>% 
+  pivot_longer(everything()) %>% 
+  mutate(category = name %>% str_remove_all("B_Pre") %>% factor(c("M", "F"))) %>% 
+  summarise(t.test(.$value ~ .$category, paired = TRUE) %>% tidy)
+
+#Means for winsor items
+
+data %>% 
+  tibble %>% 
+  filter(Condition != 1) %>% 
+  select(starts_with("BPre")) %>% 
+  pivot_longer(everything()) %>% 
+  mutate(item = name %>% str_remove_all("BPre_") %>% as.numeric,
+         mythfact = ifelse(item <= 16, "M", "F") %>% factor(c("M", 'F'))) %>% 
+  mutate(item = item %>% as.character) %>% 
+  filter(item %in% winsor_list) %>% 
+  group_by(mythfact) %>% 
+  summarise(mean = mean(value))
+
+#2 (Myth or Fact) x 3(Pre, Imm, Month) on Belief Ratings (winsorized items)
+
+ANOVA_Winsor <- Winsor %>%
+  select(Condition, B_PreM:B_MonthF) %>% 
+  filter(Condition == 2 | Condition == 3) %>% 
+  mutate(B_PreM = 10 - B_PreM,
+         B_ImmM = 10 - B_ImmM,
+         B_MonthM = 10 - B_MonthM) %>%
+  pivot_longer("B_PreM":"B_MonthF", names_to = "Items", values_to = "Rating") %>% 
+  mutate(Time = ifelse(grepl("Pre", Items), "1",
+                       ifelse(grepl("Imm", Items), "2", "3")),
+         MythFact = ifelse(grepl("F", Items), "Fact", "Myth"),
+         ID = rep(1:410, each = 6))
+
+anova_w <- anova_test(data = ANOVA_Winsor, dv = Rating, wid = ID, within = c(MythFact, Time), effect.size = "pes", detailed = T)
+get_anova_table(anova_w)
+
+#Planned comparison
+
+ANOVA_Winsor %>% 
+  filter(Time == 2) %>%
+  mutate(MythFact = MythFact %>% factor(c("Myth", "Fact"))) %>% 
+  summarise(t.test(.$Rating ~ .$MythFact, paired = TRUE) %>% tidy)
+
+Winsor %>% 
+  filter(!Condition == 1) %>% 
+  mutate(B_ImmM = 10 - B_ImmM) %>% 
+  summarise(cohens_D(B_ImmM, B_ImmF))
+
+#2 (Myth or Fact) x 2 (Imm, Month) on Belief Ratings (winsorized items)
+
+ANOVA_Winsor %>% 
+  filter(!Time == 1) %>% 
+  anova_test(., dv = Rating, wid = ID, within = c(MythFact, Time), effect.size = "pes", detailed = T) %>% 
+  get_anova_table(.)
+
+#Means for winsozrized belief regression indices
+
+Winsor %>% 
+  tibble %>% 
+  mutate(RegressionIndexMisinfo = (B_MonthM - B_ImmM)/(B_PreM - B_ImmM),
+         RegressionIndexFacts = (B_MonthF - B_ImmF)/(B_PreF - B_ImmF)) %>% 
+  filter(Condition != 1) %>% 
+  select(contains("RegressionIndex")) %>% 
+  mutate(across(starts_with("Regression"), ~ifelse(abs(.) == Inf, NA, .))) %>% 
+  filter(!is.na(RegressionIndexMisinfo),
+         !is.na(RegressionIndexFacts)) %>% 
+  pivot_longer(everything()) %>% 
+  mutate(category = name %>% str_remove_all("RegressionIndex") %>% factor(c("Misinfo", "Facts"))) %>% 
+  group_by(category) %>% 
+  summarise(mean = mean(value))
+
+#T-test for winsorized belief regression indices
+
+Winsor %>% 
+  tibble %>% 
+  mutate(RegressionIndexMisinfo = (B_MonthM - B_ImmM)/(B_PreM - B_ImmM),
+         RegressionIndexFacts = (B_MonthF - B_ImmF)/(B_PreF - B_ImmF)) %>% 
+  filter(Condition != 1) %>% 
+  select(contains("RegressionIndex")) %>% 
+  mutate(across(starts_with("Regression"), ~ifelse(abs(.) == Inf, NA, .))) %>% 
+  filter(!is.na(RegressionIndexMisinfo),
+         !is.na(RegressionIndexFacts)) %>% 
+  pivot_longer(everything()) %>% 
+  mutate(category = name %>% str_remove_all("RegressionIndex") %>% factor(c("Facts", "Misinfo"))) %>% 
+  summarise(t.test(.$value ~ .$category, paired = T) %>% tidy)
+
+```
+
