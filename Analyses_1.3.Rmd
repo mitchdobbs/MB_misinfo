@@ -18,7 +18,7 @@ library(rstatix) #for mixed model ANOVAs
 library(broom)
 library(magrittr)
 
-data <- read.csv("/Users/mitchdobbs/Desktop/R/MemBelief/Run CSV/Data.csv")
+data <- read.csv("filepath for Data.csv")
 
 ```
 
